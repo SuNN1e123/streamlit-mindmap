@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>多彩線上思維導圖</title>
+    <!-- 引入 Supabase JS SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; background: #f8fafc; }
+        #canvas { width: 100vw; height: 100vh; position: relative; }
+        #status-bar { 
+            position: fixed; bottom: 15px; right: 15px; 
+            background: rgba(15, 23, 42, 0.85); color: #fff; 
+            padding: 8px 16px; border-radius: 20px; font-size: 13px; 
+            z-index: 1000; backdrop-filter: blur(4px); box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+    </style>
+</head>
+<body>
+
+<div id="status-bar">⚡ Supabase: 初始化連線中...</div>
+<div id="canvas"></div>
+
+<script>
+    // 你的 Supabase 憑證資訊
+    const SUPABASE_URL = "https://uzpokudhmzlujcckeyys.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_r3gxgYItPh7_uJ5cnjP7ng_fsmfF13J";
+
+    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const statusBar = document.getElementById('status-bar');
+    const MAP_ID = 'shared_map_1';
+    let isLocalUpdating = false;
+
+    // 1. 從 Supabase 載入最新進度
+    async function loadFromSupabase() {
+        statusBar.innerText = "🔄 正在讀取雲端進度...";
+        const { data, error } = await supabase
+            .from('mindmaps')
+            .select('data')
+            .eq('id', MAP_ID)
+            .single();
+
+        if (error) {
+            statusBar.innerText = "❌ 連線失敗: " + error.message;
+        } else if (data && data.data) {
+            statusBar.innerText = "✅ 已載入雲端進度";
+            console.log("Supabase 資料:", data.data);
+        }
+    }
+
+    // 2. 自動儲存函數 (停止操作 0.8 秒後觸發)
+    let saveTimer = null;
+    function autoSaveToSupabase(mindMapData) {
+        statusBar.innerText = "⏳ 雲端自動儲存中...";
+        clearTimeout(saveTimer);
+
+        saveTimer = setTimeout(async () => {
+            isLocalUpdating = true;
+            const { error } = await supabase
+                .from('mindmaps')
+                .upsert({ 
+                    id: MAP_ID, 
+                    data: mindMapData,
+                    updated_at: new Date().toISOString()
+                });
+
+            if (error) {
+                statusBar.innerText = "❌ 儲存失敗: " + error.message;
+            } else {
+                statusBar.innerText = "☁️ 已自動儲存至 Supabase";
+            }
+            setTimeout(() => { isLocalUpdating = false; }, 500);
+        }, 800);
+    }
+
+    // 3. 多人實時共創：監聽朋友的修改
+    supabase
+        .channel('public:mindmaps')
+        .on('postgres_changes', { 
+            event: 'UPDATE', 
+            schema: 'public', 
+            table: 'mindmaps', 
+            filter: `id=eq.${MAP_ID}` 
+        }, (payload) => {
+            if (!isLocalUpdating && payload.new && payload.new.data) {
+                statusBar.innerText = "✨ 收到朋友的實時更新！";
+                console.log("最新變更:", payload.new.data);
+            }
+        })
+        .subscribe();
+
+    // 啟動讀取
+    loadFromSupabase();
+</script>
+</body>
+</html>
