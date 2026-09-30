@@ -2,95 +2,171 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>多彩線上思維導圖</title>
     <!-- 引入 Supabase JS SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <style>
-        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; background: #f8fafc; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { width: 100%; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; background: #f8fafc; }
+        
+        #toolbar {
+            position: fixed; top: 10px; left: 10px; right: 10px; height: 50px;
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid #e2e8f0; border-radius: 8px; display: flex;
+            align-items: center; justify-content: space-between; padding: 0 15px; z-index: 100;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05); gap: 10px;
+        }
+        .btn {
+            background: #ffffff; border: 1px solid #cbd5e1; padding: 6px 12px;
+            border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+        }
+        .btn-primary { background: #3b82f6; color: white; border: none; }
+
         #canvas { width: 100vw; height: 100vh; position: relative; }
-        #status-bar { 
-            position: fixed; bottom: 15px; right: 15px; 
-            background: rgba(15, 23, 42, 0.85); color: #fff; 
-            padding: 8px 16px; border-radius: 20px; font-size: 13px; 
-            z-index: 1000; backdrop-filter: blur(4px); box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        #svg-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+
+        .node {
+            position: absolute; padding: 10px 18px; background: #ffffff; border: 2px solid #3b82f6;
+            border-radius: 8px; cursor: move; user-select: none; box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            font-size: 14px; font-weight: bold; color: #1e293b; min-width: 100px; text-align: center;
+        }
+
+        #status-bar {
+            position: fixed; bottom: 15px; right: 15px; background: #0f172a;
+            color: #fff; padding: 8px 16px; border-radius: 20px; font-size: 12px; z-index: 1000;
         }
     </style>
 </head>
 <body>
 
-<div id="status-bar">⚡ Supabase: 初始化連線中...</div>
-<div id="canvas"></div>
+<div id="toolbar">
+    <div>
+        <button class="btn" onclick="addChild()">➕ 新增子節點</button>
+        <button class="btn" onclick="editNode()">✏️ 修改文字</button>
+    </div>
+    <div>
+        <button class="btn btn-primary" onclick="exportPDF()">📄 匯出 A4 PDF</button>
+    </div>
+</div>
+
+<div id="status-bar">⚡ 正在啟動...</div>
+
+<div id="canvas">
+    <svg id="svg-layer"></svg>
+    <div id="nodes"></div>
+</div>
 
 <script>
-    // 你的 Supabase 憑證資訊
     const SUPABASE_URL = "https://uzpokudhmzlujcckeyys.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_r3gxgYItPh7_uJ5cnjP7ng_fsmfF13J";
 
-    const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    let supabaseClient = null;
     const statusBar = document.getElementById('status-bar');
-    const MAP_ID = 'shared_map_1';
-    let isLocalUpdating = false;
 
-    // 1. 從 Supabase 載入最新進度
-    async function loadFromSupabase() {
-        statusBar.innerText = "🔄 正在讀取雲端進度...";
-        const { data, error } = await supabase
-            .from('mindmaps')
-            .select('data')
-            .eq('id', MAP_ID)
-            .single();
+    let mindData = {
+        id: 'root', text: '核心主題', x: 300, y: 250,
+        children: [
+            { id: 'c1', text: '子主題 1', x: 550, y: 180, children: [] },
+            { id: 'c2', text: '子主題 2', x: 550, y: 320, children: [] }
+        ]
+    };
+    let selectedId = 'root';
 
-        if (error) {
-            statusBar.innerText = "❌ 連線失敗: " + error.message;
-        } else if (data && data.data) {
-            statusBar.innerText = "✅ 已載入雲端進度";
-            console.log("Supabase 資料:", data.data);
+    // 初始化 Supabase
+    try {
+        if (window.supabase) {
+            supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+            statusBar.innerText = "⚡ Supabase 已連線";
+        } else {
+            statusBar.innerText = "⚠️ 離線模式 (SDK 載入失敗)";
+        }
+    } catch (e) {
+        console.error(e);
+        statusBar.innerText = "⚠️ 離線模式";
+    }
+
+    function render() {
+        const container = document.getElementById('nodes');
+        const svg = document.getElementById('svg-layer');
+        container.innerHTML = ''; svg.innerHTML = '';
+        drawNode(mindData, container, svg);
+    }
+
+    function drawNode(node, container, svg) {
+        const div = document.createElement('div');
+        div.className = 'node';
+        div.style.left = node.x + 'px'; div.style.top = node.y + 'px';
+        div.innerText = node.text;
+        if (node.id === selectedId) div.style.borderColor = '#ef4444';
+
+        div.onclick = (e) => { e.stopPropagation(); selectedId = node.id; render(); };
+
+        // 簡單拖拽
+        let isDrag = false, sx, sy;
+        div.onmousedown = (e) => { isDrag = true; sx = e.clientX - node.x; sy = e.clientY - node.y; selectedId = node.id; render(); };
+        window.onmousemove = (e) => { if (isDrag) { node.x = e.clientX - sx; node.y = e.clientY - sy; render(); autoSave(); } };
+        window.onmouseup = () => { isDrag = false; };
+
+        container.appendChild(div);
+
+        if (node.children) {
+            node.children.forEach(c => {
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('x1', node.x + 50); line.setAttribute('y1', node.y + 20);
+                line.setAttribute('x2', c.x + 50); line.setAttribute('y2', c.y + 20);
+                line.setAttribute('stroke', '#cbd5e1'); line.setAttribute('stroke-width', '2');
+                svg.appendChild(line);
+                drawNode(c, container, svg);
+            });
         }
     }
 
-    // 2. 自動儲存函數 (停止操作 0.8 秒後觸發)
-    let saveTimer = null;
-    function autoSaveToSupabase(mindMapData) {
-        statusBar.innerText = "⏳ 雲端自動儲存中...";
-        clearTimeout(saveTimer);
-
-        saveTimer = setTimeout(async () => {
-            isLocalUpdating = true;
-            const { error } = await supabase
-                .from('mindmaps')
-                .upsert({ 
-                    id: MAP_ID, 
-                    data: mindMapData,
-                    updated_at: new Date().toISOString()
-                });
-
-            if (error) {
-                statusBar.innerText = "❌ 儲存失敗: " + error.message;
-            } else {
-                statusBar.innerText = "☁️ 已自動儲存至 Supabase";
+    function addChild() {
+        function findAndAdd(n) {
+            if (n.id === selectedId) {
+                n.children.push({ id: 'n_' + Date.now(), text: '新分支', x: n.x + 200, y: n.y + 50, children: [] });
+                return true;
             }
-            setTimeout(() => { isLocalUpdating = false; }, 500);
+            return n.children && n.children.some(findAndAdd);
+        }
+        findAndAdd(mindData);
+        render(); autoSave();
+    }
+
+    function editNode() {
+        const txt = prompt("請輸入新內容：");
+        if (!txt) return;
+        function findAndEdit(n) {
+            if (n.id === selectedId) { n.text = txt; return true; }
+            return n.children && n.children.some(findAndEdit);
+        }
+        findAndEdit(mindData);
+        render(); autoSave();
+    }
+
+    let timer = null;
+    function autoSave() {
+        if (!supabaseClient) return;
+        statusBar.innerText = "⏳ 儲存中...";
+        clearTimeout(timer);
+        timer = setTimeout(async () => {
+            const { error } = await supabaseClient.from('mindmaps').upsert({ id: 'shared_map_1', data: mindData });
+            if (error) statusBar.innerText = "❌ 儲存失敗";
+            else statusBar.innerText = "☁️ 已自動儲存至 Supabase";
         }, 800);
     }
 
-    // 3. 多人實時共創：監聽朋友的修改
-    supabase
-        .channel('public:mindmaps')
-        .on('postgres_changes', { 
-            event: 'UPDATE', 
-            schema: 'public', 
-            table: 'mindmaps', 
-            filter: `id=eq.${MAP_ID}` 
-        }, (payload) => {
-            if (!isLocalUpdating && payload.new && payload.new.data) {
-                statusBar.innerText = "✨ 收到朋友的實時更新！";
-                console.log("最新變更:", payload.new.data);
-            }
-        })
-        .subscribe();
+    async function loadData() {
+        if (!supabaseClient) { render(); return; }
+        const { data } = await supabaseClient.from('mindmaps').select('data').eq('id', 'shared_map_1').single();
+        if (data && data.data) mindData = data.data;
+        render();
+        statusBar.innerText = "☁️ 雲端已同步";
+    }
 
-    // 啟動讀取
-    loadFromSupabase();
+    loadData();
 </script>
 </body>
 </html>
